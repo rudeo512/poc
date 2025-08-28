@@ -3,35 +3,43 @@ from typing import List, Tuple
 
 import gradio as gr
 from dotenv import load_dotenv
-from langchain_openai import ChatOpenAI
-from langchain_tavily import TavilySearch
-from langfuse.langchain import CallbackHandler
-from langgraph.prebuilt import create_react_agent
+from langgraph.types import Command
+
+from src.app.graph.main.grapy import graph
 
 load_dotenv()
-langfuse_handler = CallbackHandler()
 
 
 class SampleChatBot:
     def __init__(self):
-        self.graph = create_react_agent(model=ChatOpenAI(model="gpt-4.1-mini"), tools=[TavilySearch(max_results=2)])
+        self.graph = graph
         self.thread_id = str(uuid.uuid4())
+        self.config = {
+            "configurable": {"thread_id": self.thread_id},
+        }
+        self.user_id = "user_id"
 
     def get_thread_config(self):
-        """스레드 설정 반환"""
         return {"configurable": {"thread_id": self.thread_id}}
 
-    def chat(self, message: str, history: List[Tuple[str, str]]) -> str:
-        result = self.graph.invoke(
-            {"messages": [("human", message)]},
-            config={
-                "configurable": {"thread_id": self.thread_id},
-                "callbacks": [langfuse_handler],
-                "metadata": {"langfuse_tags": ["evaluation", "rag"], "evaluation_run": True},
-            },
-        )
+    async def chat(self, message: str, history: List[Tuple[str, str]]) -> str:
+        return await self._chat(message)
 
-        return result["messages"][-1].content
+    async def _chat(self, message: str) -> str:
+        current_state = self.graph.get_state(self.config)
+        if len(current_state.tasks) > 0:
+            result = await self.graph.ainvoke(
+                Command(resume=message), config=self.config, context={"user_id": self.user_id}
+            )
+        else:
+            result = await self.graph.ainvoke(
+                {"question": message}, config=self.config, context={"user_id": self.user_id}
+            )
+
+        if "__interrupt__" in result:
+            result = result["__interrupt__"][0].value
+
+        return result["generation"]
 
 
 # Gradio 인터페이스 생성 함수
@@ -39,13 +47,13 @@ def create_gradio_interface(chatbot):
     """Gradio 인터페이스를 생성하는 함수"""
 
     with gr.Blocks(
-            title="Sample AI 어시스턴트 (HITL)",
-            theme=gr.themes.Soft(),
-            css="""
+        title="Sample AI 어시스턴트 (HITL)",
+        theme=gr.themes.Soft(),
+        css="""
         .chat-container { max-width: 1000px; margin: 0 auto; }
         .example-btn { margin: 2px; }
         """,
-            analytics_enabled=False,
+        analytics_enabled=False,
     ) as demo:
         gr.ChatInterface(
             fn=chatbot.chat,
